@@ -477,6 +477,7 @@ function startGps(){
     }else{
       userMarker.setLatLng([userLat,userLng]);
     }
+    salvarLocalizacaoMotorista();
   },err=>{
     gpsDot.className='dot bad';
     gpsText.textContent='Permissão de GPS negada ou sinal indisponível';
@@ -575,7 +576,9 @@ function sos(){
   const link=`https://maps.google.com/?q=${userLat},${userLng}`;
   const msg=`🚨 SOS SEGURIX GPS! Preciso de ajuda. Minha localização real: ${link}`;
   window.open('https://wa.me/?text='+encodeURIComponent(msg),'_blank');
-  toast('🚨 SOS: mensagem WhatsApp com localização real pronta');
+  enviarSOSFirebase().then(ok=>{
+    toast(ok ? '🚨 SOS enviado ao Firebase + WhatsApp pronto' : '🚨 SOS: WhatsApp pronto. Faça login para salvar no Firebase');
+  });
 }
 
 function enviarContato(num){
@@ -884,6 +887,106 @@ async function liberarProLocal(){
   }
   toast('👑 PRO liberado para teste. No app publicado, liberar só após Play Billing confirmar pagamento.');
 }
+
+
+// ================= FIREBASE PROFISSIONAL: GPS, ALERTAS, SOS, ONLINE =================
+let segurixUltimoEnvioGPS = 0;
+let motoristasOnlineLayer = null;
+let unsubscribeMotoristasOnline = null;
+
+function firebasePronto(){
+  return iniciarFirebase() && firebaseAuth && firebaseDb;
+}
+
+async function salvarLocalizacaoMotorista(){
+  try{
+    if(!firebaseDb || !segurixUsuario || !userLat || !userLng) return;
+    const agora = Date.now();
+    if(agora - segurixUltimoEnvioGPS < 8000) return;
+    segurixUltimoEnvioGPS = agora;
+    await firebaseDb.collection('motoristasOnline').doc(segurixUsuario.uid).set({
+      uid: segurixUsuario.uid,
+      email: segurixUsuario.email || null,
+      nome: segurixUsuario.displayName || 'Motorista Segurix',
+      lat: userLat,
+      lng: userLng,
+      velocidade: currentSpeed || 0,
+      status: 'online',
+      atualizadoEm: firebase.firestore.FieldValue.serverTimestamp(),
+      atualizadoMs: agora,
+      corCarro: localStorage.getItem('segurix_car_color') || 'azul'
+    }, {merge:true});
+  }catch(e){ console.warn('GPS Firebase:', e); }
+}
+
+function ativarMotoristasOnline(){
+  if(!firebasePronto()){
+    toast('🔥 Faça login para ver motoristas online em tempo real');
+    return;
+  }
+  if(!motoristasOnlineLayer){ motoristasOnlineLayer = L.layerGroup().addTo(map); }
+  if(unsubscribeMotoristasOnline){ unsubscribeMotoristasOnline(); }
+  unsubscribeMotoristasOnline = firebaseDb.collection('motoristasOnline').limit(50).onSnapshot((snap)=>{
+    motoristasOnlineLayer.clearLayers();
+    let total=0;
+    snap.forEach(doc=>{
+      const m=doc.data();
+      if(!m.lat || !m.lng || (segurixUsuario && m.uid===segurixUsuario.uid)) return;
+      if(m.atualizadoMs && Date.now()-m.atualizadoMs > 1000*60*10) return;
+      total++;
+      L.marker([m.lat,m.lng],{
+        icon:L.divIcon({html:'<div class="markerCar">🚗</div>',className:'',iconSize:[34,34],iconAnchor:[17,17]})
+      }).addTo(motoristasOnlineLayer).bindPopup('<b>'+ (m.nome||'Motorista online') +'</b><br>Velocidade: '+(m.velocidade||0)+' km/h');
+    });
+    toast('🚗 Motoristas online sincronizados: '+total);
+  }, err=>console.warn('Motoristas online:',err));
+}
+
+async function enviarSOSFirebase(){
+  try{
+    if(!firebaseDb || !segurixUsuario || !userLat || !userLng) return false;
+    const link = `https://maps.google.com/?q=${userLat},${userLng}`;
+    await firebaseDb.collection('sosAlertas').add({
+      uid: segurixUsuario.uid,
+      email: segurixUsuario.email || null,
+      lat: userLat,
+      lng: userLng,
+      link,
+      status: 'ativo',
+      app: 'SegurixGPS Pro',
+      criadoEm: firebase.firestore.FieldValue.serverTimestamp(),
+      criadoMs: Date.now()
+    });
+    return true;
+  }catch(e){ console.warn('SOS Firebase:', e); return false; }
+}
+
+async function registrarAlertaCompartilhado(tipo, extra={}){
+  try{
+    if(!firebaseDb || !userLat || !userLng) return false;
+    await firebaseDb.collection('alertasCompartilhados').add({
+      tipo,
+      lat: userLat,
+      lng: userLng,
+      uid: segurixUsuario?.uid || 'sem-login',
+      email: segurixUsuario?.email || null,
+      extra,
+      criadoEm: firebase.firestore.FieldValue.serverTimestamp(),
+      criadoMs: Date.now()
+    });
+    return true;
+  }catch(e){ console.warn('Alerta compartilhado:', e); return false; }
+}
+
+function iniciarAssinaturaPlayStore(){
+  toast('💳 Assinatura Play Store preparada. No APK Android Studio ligue ao Google Play Billing para validação real.');
+}
+
+// Mantém compatibilidade com os botões antigos do HTML.
+window.firebaseLoginEmail = entrarEmail;
+window.firebaseLoginGoogle = entrarGoogle;
+window.ativarMotoristasOnline = ativarMotoristasOnline;
+window.iniciarAssinaturaPlayStore = iniciarAssinaturaPlayStore;
 
 initMap();
 verificarLogin();
